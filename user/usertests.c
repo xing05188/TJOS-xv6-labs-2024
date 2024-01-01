@@ -32,9 +32,10 @@ char buf[BUFSZ];
 void
 copyin(char *s)
 {
-  uint64 addrs[] = { 0x80000000LL, 0xffffffffffffffff };
+  uint64 addrs[] = { 0x80000000LL, 0x3fffffe000, 0x3ffffff000, 0x4000000000,
+                     0xffffffffffffffff };
 
-  for(int ai = 0; ai < 2; ai++){
+  for(int ai = 0; ai < sizeof(addrs)/sizeof(addrs[0]); ai++){
     uint64 addr = addrs[ai];
     
     int fd = open("copyin1", O_CREATE|O_WRONLY);
@@ -76,9 +77,10 @@ copyin(char *s)
 void
 copyout(char *s)
 {
-  uint64 addrs[] = { 0LL, 0x80000000LL, 0xffffffffffffffff };
+  uint64 addrs[] = { 0LL, 0x80000000LL, 0x3fffffe000, 0x3ffffff000, 0x4000000000,
+                     0xffffffffffffffff };
 
-  for(int ai = 0; ai < 2; ai++){
+  for(int ai = 0; ai < sizeof(addrs)/sizeof(addrs[0]); ai++){
     uint64 addr = addrs[ai];
 
     int fd = open("README", 0);
@@ -117,9 +119,10 @@ copyout(char *s)
 void
 copyinstr1(char *s)
 {
-  uint64 addrs[] = { 0x80000000LL, 0xffffffffffffffff };
+  uint64 addrs[] = { 0x80000000LL, 0x3fffffe000, 0x3ffffff000, 0x4000000000,
+                     0xffffffffffffffff };
 
-  for(int ai = 0; ai < 2; ai++){
+  for(int ai = 0; ai < sizeof(addrs)/sizeof(addrs[0]); ai++){
     uint64 addr = addrs[ai];
 
     int fd = open((char *)addr, O_CREATE|O_WRONLY);
@@ -2421,27 +2424,34 @@ stacktest(char *s)
     exit(xstatus);
 }
 
-// check that writes to text segment fault
+// check that writes to a few forbidden addresses
+// cause a fault, e.g. process's text and TRAMPOLINE.
 void
-textwrite(char *s)
+nowrite(char *s)
 {
   int pid;
   int xstatus;
+  uint64 addrs[] = { 0, 0x80000000LL, 0x3fffffe000, 0x3ffffff000, 0x4000000000,
+                     0xffffffffffffffff };
   
-  pid = fork();
-  if(pid == 0) {
-    volatile int *addr = (int *) 0;
-    *addr = 10;
-    exit(1);
-  } else if(pid < 0){
-    printf("%s: fork failed\n", s);
-    exit(1);
+  for(int ai = 0; ai < sizeof(addrs)/sizeof(addrs[0]); ai++){
+    pid = fork();
+    if(pid == 0) {
+      volatile int *addr = (int *) addrs[ai];
+      *addr = 10;
+      printf("%s: write to %p did not fail!\n", s, addr);
+      exit(0);
+    } else if(pid < 0){
+      printf("%s: fork failed\n", s);
+      exit(1);
+    }
+    wait(&xstatus);
+    if(xstatus == 0){
+      // kernel did not kill child!
+      exit(1);
+    }
   }
-  wait(&xstatus);
-  if(xstatus == -1)  // kernel killed child?
-    exit(0);
-  else
-    exit(xstatus);
+  exit(0);
 }
 
 // regression test. copyin(), copyout(), and copyinstr() used to cast
@@ -2629,7 +2639,7 @@ struct test {
   {bigargtest, "bigargtest"},
   {argptest, "argptest"},
   {stacktest, "stacktest"},
-  {textwrite, "textwrite"},
+  {nowrite, "nowrite"},
   {pgbug, "pgbug" },
   {sbrkbugs, "sbrkbugs" },
   {sbrklast, "sbrklast"},
