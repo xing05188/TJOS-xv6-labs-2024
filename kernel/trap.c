@@ -68,8 +68,8 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %lx pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%lx stval=%lx\n", r_sepc(), r_stval());
+    printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
+    printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
     setkilled(p);
   }
 
@@ -145,8 +145,8 @@ kerneltrap()
     panic("kerneltrap: interrupts enabled");
 
   if((which_dev = devintr()) == 0){
-    printf("scause %lx\n", scause);
-    printf("sepc=%lx stval=%lx\n", r_sepc(), r_stval());
+    printf("scause 0x%lx\n", scause);
+    printf("sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
     panic("kerneltrap");
   }
 

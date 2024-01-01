@@ -2666,7 +2666,7 @@ bigdir(char *s)
     name[2] = '0' + (i % 64);
     name[3] = '\0';
     if(link("bd", name) != 0){
-      printf("%s: bigdir link(bd, %s) failed\n", s, name);
+      printf("%s: bigdir i=%d link(bd, %s) failed\n", s, i, name);
       exit(1);
     }
   }
