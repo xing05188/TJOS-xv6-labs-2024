@@ -1594,7 +1594,7 @@ subdir(char *s)
     exit(1);
   }
   if(chdir("dd/../../../dd") != 0){
-    printf("%s: chdir dd/../../dd failed\n", s);
+    printf("%s: chdir dd/../../../dd failed\n", s);
     exit(1);
   }
   if(chdir("./..") != 0){
