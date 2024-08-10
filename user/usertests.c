@@ -2310,9 +2310,14 @@ bigargtest(char *s)
   if(pid == 0){
     static char *args[MAXARG];
     int i;
+    char big[400];
+    memset(big, ' ', sizeof(big));
+    big[sizeof(big)-1] = '\0';
     for(i = 0; i < MAXARG-1; i++)
-      args[i] = "bigargs test: failed\n                                                                                                                                                                                                       ";
+      args[i] = big;
     args[MAXARG-1] = 0;
+    // this exec() should fail (and return) because the
+    // arguments are too large.
     exec("echo", args);
     fd = open("bigarg-ok", O_CREATE);
     close(fd);
@@ -2409,7 +2414,7 @@ stacktest(char *s)
   pid = fork();
   if(pid == 0) {
     char *sp = (char *) r_sp();
-    sp -= PGSIZE;
+    sp -= USERSTACK*PGSIZE;
     // the *sp should cause a trap.
     printf("%s: stacktest: read below stack %d\n", s, *sp);
     exit(1);
