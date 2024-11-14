@@ -8,7 +8,7 @@ int
 main()
 {
   char buf[BSIZE];
-  int fd, i, blocks;
+  int fd, i, blocks, readblocks;
 
   fd = open("big.file", O_CREATE | O_WRONLY);
   if(fd < 0){
@@ -35,10 +35,12 @@ main()
   
   close(fd);
   fd = open("big.file", O_RDONLY);
+  printf("reading bigfile\n");
   if(fd < 0){
     printf("bigfile: cannot re-open big.file for reading\n");
     exit(-1);
   }
+  readblocks = 0;
   for(i = 0; i < blocks; i++){
     int cc = read(fd, buf, sizeof(buf));
     if(cc <= 0){
@@ -50,9 +52,12 @@ main()
              *(int*)buf, i);
       exit(-1);
     }
+    readblocks++;
+    if (readblocks % 100 == 0)
+      printf(".");
   }
 
-  printf("bigfile done; ok\n"); 
+  printf("\nbigfile done; ok\n"); 
 
   exit(0);
 }
