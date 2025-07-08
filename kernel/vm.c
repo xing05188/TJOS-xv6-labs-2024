@@ -488,9 +488,35 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 
 
 #ifdef LAB_PGTBL
+void PRINT(pagetable_t pagetable, int level, uint64 va) {
+  uint64 sz;
+  if(level == 2) {
+    sz = 512 * 512 * PGSIZE;
+  } else if(level == 1) {
+    sz = 512 * PGSIZE; 
+  } else {
+    sz = PGSIZE; 
+  }
+  for(int i = 0; i < 512; i++, va += sz) {
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) == 0)
+      continue;
+    for(int j = level; j < 3; j++) {
+      printf(" ..");
+    }
+    printf("%p: pte %p pa %p\n", 
+           (pagetable_t)va, 
+           (pagetable_t)pte, 
+           (pagetable_t)PTE2PA(pte));
+    if((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
+      PRINT((pagetable_t)PTE2PA(pte), level - 1, va);
+    }
+  }
+}
 void
 vmprint(pagetable_t pagetable) {
-  // your code here
+  printf("page table %p\n", pagetable);
+  PRINT(pagetable, 2, 0);
 }
 #endif
 

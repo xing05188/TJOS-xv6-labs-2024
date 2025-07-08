@@ -131,6 +131,13 @@ found:
     release(&p->lock);
     return 0;
   }
+  // Allocate a usyscall page.
+  if ((p->usyscallpage = (struct usyscall *)kalloc()) == 0) {
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  p->usyscallpage->pid = p->pid;
 
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
@@ -160,6 +167,9 @@ freeproc(struct proc *p)
   p->trapframe = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
+  if(p->usyscallpage)
+    kfree((void *)p->usyscallpage);
+  p->usyscallpage = 0;
   p->pagetable = 0;
   p->sz = 0;
   p->pid = 0;
@@ -193,6 +203,12 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+  if(mappages(pagetable, USYSCALL, PGSIZE, 
+              (uint64)(p->usyscallpage), PTE_R | PTE_U) < 0) {
+    uvmfree(pagetable, 0);
+    return 0;
+  }
+
   // map the trapframe page just below the trampoline page, for
   // trampoline.S.
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
@@ -212,6 +228,7 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  uvmunmap(pagetable, USYSCALL, 1, 0);
   uvmfree(pagetable, sz);
 }
 
@@ -256,21 +273,42 @@ userinit(void)
 
 // Grow or shrink user memory by n bytes.
 // Return 0 on success, -1 on failure.
+// 在 kernel/proc.c 中修改 growproc
 int
 growproc(int n)
 {
-  uint64 sz;
   struct proc *p = myproc();
+  uint64 sz = p->sz;
+  uint64 nsz = sz + n;
 
-  sz = p->sz;
-  if(n > 0){
-    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
-      return -1;
+  // 若申请大小≥2MB，尝试使用超级页
+  if (n >= SUPERPAGESIZE) {
+    // 计算 2MB 对齐的起始地址
+    uint64 align = sz % SUPERPAGESIZE;
+    uint64 start = sz + (align ? (SUPERPAGESIZE - align) : 0);
+    // 检查连续 2MB 区域是否在新申请范围内
+    if (start + SUPERPAGESIZE <= nsz) {
+      // 分配超级页物理内存
+      void* pa = superalloc();
+      if (pa) {
+        // 映射 2MB 超级页（一级页表 PTE，设置 PTE_V、PTE_R、PTE_W）
+        if (mappages(p->pagetable, start, SUPERPAGESIZE, 
+                     (uint64)pa, PTE_V | PTE_R | PTE_W | PTE_U) == 0) {
+          p->sz = nsz;
+          return 0;
+        }
+        superfree(pa);  // 映射失败，释放物理页
+      }
     }
-  } else if(n < 0){
-    sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
-  p->sz = sz;
+
+  // 若不满足超级页条件，使用普通页分配
+  if (nsz > p->sz + n)
+    return -1;
+  if (uvmalloc(p->pagetable, sz, nsz,PTE_W | PTE_R | PTE_U) < 0) {
+    return -1;
+  }
+  p->sz = nsz;
   return 0;
 }
 
