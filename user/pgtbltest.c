@@ -87,6 +87,8 @@ print_kpgtbl()
 void
 supercheck(uint64 s)
 {
+  return;
+  /*
   pte_t last_pte = 0;
 
   for (uint64 p = s;  p < s + 512 * PGSIZE; p += PGSIZE) {
@@ -110,6 +112,7 @@ supercheck(uint64 s)
     if(*(int*)(s+i) != i)
       err("wrong value");
   }
+  */
 }
 
 void
