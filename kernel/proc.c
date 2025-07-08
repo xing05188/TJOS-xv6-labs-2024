@@ -277,38 +277,18 @@ userinit(void)
 int
 growproc(int n)
 {
+  uint64 sz;
   struct proc *p = myproc();
-  uint64 sz = p->sz;
-  uint64 nsz = sz + n;
 
-  // 若申请大小≥2MB，尝试使用超级页
-  if (n >= SUPERPAGESIZE) {
-    // 计算 2MB 对齐的起始地址
-    uint64 align = sz % SUPERPAGESIZE;
-    uint64 start = sz + (align ? (SUPERPAGESIZE - align) : 0);
-    // 检查连续 2MB 区域是否在新申请范围内
-    if (start + SUPERPAGESIZE <= nsz) {
-      // 分配超级页物理内存
-      void* pa = superalloc();
-      if (pa) {
-        // 映射 2MB 超级页（一级页表 PTE，设置 PTE_V、PTE_R、PTE_W）
-        if (mappages(p->pagetable, start, SUPERPAGESIZE, 
-                     (uint64)pa, PTE_V | PTE_R | PTE_W | PTE_U) == 0) {
-          p->sz = nsz;
-          return 0;
-        }
-        superfree(pa);  // 映射失败，释放物理页
-      }
+  sz = p->sz;
+  if(n > 0){
+    if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
+      return -1;
     }
+  } else if(n < 0){
+    sz = uvmdealloc(p->pagetable, sz, sz + n);
   }
-
-  // 若不满足超级页条件，使用普通页分配
-  if (nsz > p->sz + n)
-    return -1;
-  if (uvmalloc(p->pagetable, sz, nsz,PTE_W | PTE_R | PTE_U) < 0) {
-    return -1;
-  }
-  p->sz = nsz;
+  p->sz = sz;
   return 0;
 }
 
