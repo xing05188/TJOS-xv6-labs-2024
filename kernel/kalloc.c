@@ -23,10 +23,14 @@ struct {
   struct run *freelist;
 } kmem;
 
+struct spinlock ref_lock;
+int pm_ref[(PHYSTOP - KERNBASE) / PGSIZE]; 
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&ref_lock, "pm_ref");
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -51,15 +55,22 @@ kfree(void *pa)
   if(((uint64)pa % PGSIZE) != 0 || (char*)pa < end || (uint64)pa >= PHYSTOP)
     panic("kfree");
 
-  // Fill with junk to catch dangling refs.
-  memset(pa, 1, PGSIZE);
+  acquire(&ref_lock);
 
-  r = (struct run*)pa;
+  pm_ref[refidx((uint64)pa)] --;
 
-  acquire(&kmem.lock);
-  r->next = kmem.freelist;
-  kmem.freelist = r;
-  release(&kmem.lock);
+  // 如果引用计数已经为 0，说明没人再使用这页，可以释放
+  if(pm_ref[refidx((uint64)pa)] <= 0){
+    memset(pa, 1, PGSIZE);
+    r = (struct run*)pa;
+
+    acquire(&kmem.lock);
+    r->next = kmem.freelist;
+    kmem.freelist = r;
+    release(&kmem.lock);
+  }
+
+  release(&ref_lock);
 }
 
 // Allocate one 4096-byte page of physical memory.
@@ -76,7 +87,62 @@ kalloc(void)
     kmem.freelist = r->next;
   release(&kmem.lock);
 
-  if(r)
-    memset((char*)r, 5, PGSIZE); // fill with junk
+  if(r){
+    memset((char*)r, 5, PGSIZE);
+
+    // 初始化引用计数为 1（即当前只有一个使用者）
+    pm_ref[refidx((uint64)r)] = 1;
+  }
   return (void*)r;
+}
+
+// 将物理地址转换为引用计数数组的索引
+uint64
+refidx(uint64 pa){
+  return (pa - KERNBASE) / PGSIZE;
+}
+
+// 增加某页的引用计数（例如共享页时）
+void
+refup(void* pa){
+  acquire(&ref_lock);
+  pm_ref[refidx((uint64)pa)] ++;
+  release(&ref_lock);
+}
+
+// 减少某页的引用计数（不是释放，只是标记减少）
+void
+refdown(void* pa){
+  acquire(&ref_lock);
+  pm_ref[refidx((uint64)pa)] --;
+  release(&ref_lock);
+}
+
+void*
+copyPA(void* pa){
+  acquire(&ref_lock);
+
+  // 如果引用计数只有 1，说明没有其他用户，可以直接写
+  if(pm_ref[refidx((uint64)pa)] <= 1){
+    release(&ref_lock);
+    return pa;
+  }
+
+  // 否则分配新页（进行复制）
+  char* new = kalloc();
+  if(new == 0){
+    release(&ref_lock);
+    panic("out of memory");
+    return 0;
+  }
+
+  // 将原页内容复制到新页
+  memmove((void*)new, pa, PGSIZE);
+
+  // 原页的引用计数减一（当前页会换成新页）
+  pm_ref[refidx((uint64)pa)] --;
+
+  release(&ref_lock);
+
+  return (void*)new;
 }

@@ -315,7 +315,6 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
@@ -323,14 +322,17 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((*pte & PTE_V) == 0)
       panic("uvmcopy: page not present");
     pa = PTE2PA(*pte);
+	 // 修改权限位
+    if(*pte & PTE_W){
+        *pte &= ~PTE_W;
+        *pte |= PTE_COW;
+    }
     flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
+    // 映射
+    if(mappages(new, i, PGSIZE, (uint64)pa, flags) != 0){
       goto err;
     }
+    refup((void*)pa);
   }
   return 0;
 
@@ -338,6 +340,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
+
 
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
@@ -362,14 +365,23 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   pte_t *pte;
 
   while(len > 0){
+    // 先进行页面对其
+    // printf("dst:%ld ", dstva);
     va0 = PGROUNDDOWN(dstva);
+    // printf("va:%ld ", va0);
     if(va0 >= MAXVA)
       return -1;
+    // 判断写时复制页
+    if(iscowpage(pagetable, va0)) {
+      copyonwrite(pagetable, va0);
+    }
+    // walk，看看最后的权限位是否正确。
     pte = walk(pagetable, va0, 0);
-    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 ||
-       (*pte & PTE_W) == 0)
+    if(pte == 0 || (*pte & PTE_V) == 0 || (*pte & PTE_U) == 0 || (*pte & PTE_W) == 0)
       return -1;
+	 // 获取物理地址
     pa0 = PTE2PA(*pte);
+	 // 下面不需要修改了
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -381,6 +393,7 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   }
   return 0;
 }
+
 
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
@@ -449,3 +462,37 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+// 处理写时复制异常，将虚拟地址 va 映射的物理页复制一份并映射为可写
+void
+copyonwrite(pagetable_t pagetable, uint64 va) {
+  // 将地址向下对齐到页边界（因为页表管理的是页对齐地址）
+  va = PGROUNDDOWN((uint64)va);
+
+  // 查找虚拟地址对应的页表项
+  pte_t* pte = walk(pagetable, va, 0);
+  // 从页表项中提取物理地址（即原始共享页）
+  uint64 pa = PTE2PA(*pte);
+
+  // 调用 copyPA 复制物理页，若引用计数 > 1 就复制，否则返回原始页
+  void* new = copyPA((void*)pa);
+  if((uint64)new == 0){
+    panic("cowcopy_pa err\n");
+    exit(-1);
+  }
+
+  // 设置新的页表项权限：
+  // - 添加写权限（PTE_W）
+  // - 去掉 COW 标记位（PTE_COW）
+  uint64 flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
+
+  // 解除旧的页映射（不回收物理内存）
+  uvmunmap(pagetable, va, 1, 0);
+
+  // 将新的物理页映射到相同的虚拟地址，带上正确的权限
+  if(mappages(pagetable, va, PGSIZE, (uint64)new, flags) == -1){
+    kfree(new);
+    panic("cow mappages failed");
+  }
+}
+

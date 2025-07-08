@@ -187,3 +187,11 @@ void            virtio_disk_intr(void);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x)/sizeof((x)[0]))
+
+void refdown(void* pa);
+void refup(void* pa);
+uint64 refidx(uint64 pa);
+void* copyPA(void* pa);  // 真正的复制物理页 
+void copyonwrite(pagetable_t pagetable, uint64 va);  // 写时复制逻辑
+int iscowpage(pagetable_t pagetable, uint64 va);  // 判断是否为写时复制页
+
