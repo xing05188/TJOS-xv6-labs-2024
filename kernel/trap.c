@@ -66,7 +66,6 @@ usertrap(void)
 
     syscall();
   } else if((which_dev = devintr()) != 0){
-    // ok
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
@@ -77,8 +76,19 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
+  if(which_dev == 2){
+    if(p->interval != 0) { // 如果设定了时钟事件
+      if(p->ticks++ == p->interval) {
+        if(!p->alarm_goingoff) { // 确保没有时钟正在运行
+          p->ticks = 0;
+          *(p->alarm_trapframe) = *(p->trapframe);
+          p->trapframe->epc = (uint64)p->handler;
+          p->alarm_goingoff = 1;
+        }
+      }
+    }
     yield();
+  }
 
   usertrapret();
 }
@@ -216,3 +226,22 @@ devintr()
   }
 }
 
+int sigalarm(int ticks, void(*handler)()) {
+  // 初始化alarm
+  struct proc *p = myproc();
+  p->interval = ticks;
+  p->handler = handler;
+  p->ticks = 0;
+  return 0; 
+}
+
+int sigreturn() {
+  struct proc *p = myproc();
+  // 恢复之前的trapframe，并清除alarm标志位
+  *(p->trapframe) = *(p->alarm_trapframe);
+
+  p->alarm_goingoff = 0;
+  // 这里返回a0的原因是，当我们执行return的时候，返回值会被保存在a0中
+  // 导致a0被覆盖，所以此时直接返回a0即可，我们在最后会进行分析
+  return p->trapframe->a0;
+}

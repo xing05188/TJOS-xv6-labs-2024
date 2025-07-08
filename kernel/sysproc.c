@@ -54,6 +54,8 @@ sys_sleep(void)
   int n;
   uint ticks0;
 
+  backtrace();
+
   argint(0, &n);
   if(n < 0)
     n = 0;
@@ -90,4 +92,21 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+
+uint64
+sys_sigalarm(void) {
+  int n;
+  uint64 handler;
+  // 获取参数
+  argint(0, &n);
+  argaddr(1, &handler);
+  // 调用下一层
+  return sigalarm(n, (void(*)())(handler));
+}
+
+uint64
+sys_sigreturn(void) {
+  return sigreturn();
 }

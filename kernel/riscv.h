@@ -380,3 +380,14 @@ typedef uint64 *pagetable_t; // 512 PTEs
 // Sv39, to avoid having to sign-extend virtual addresses
 // that have the high bit set.
 #define MAXVA (1L << (9 + 9 + 9 + 12 - 1))
+
+#ifndef __ASSEMBLER__
+// 读取 s0 寄存器（当前帧指针）
+static inline uint64
+r_fp()
+{
+  uint64 x;
+  asm volatile("mv %0, s0" : "=r" (x));  // 通过内联汇编将 s0 的值存入 x
+  return x;
+}
+#endif
