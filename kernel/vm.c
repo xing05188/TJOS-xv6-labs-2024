@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include <stddef.h>
 
 /*
  * the kernel's page table.
@@ -85,8 +86,9 @@ kvminithart()
 pte_t *
 walk(pagetable_t pagetable, uint64 va, int alloc)
 {
-  if(va >= MAXVA)
-    panic("walk");
+  if(va >= MAXVA){
+    return 0;
+  }
 
   for(int level = 2; level > 0; level--) {
     pte_t *pte = &pagetable[PX(level, va)];
@@ -481,9 +483,6 @@ copyonwrite(pagetable_t pagetable, uint64 va) {
     exit(-1);
   }
 
-  // 设置新的页表项权限：
-  // - 添加写权限（PTE_W）
-  // - 去掉 COW 标记位（PTE_COW）
   uint64 flags = (PTE_FLAGS(*pte) | PTE_W) & (~PTE_COW);
 
   // 解除旧的页映射（不回收物理内存）
@@ -496,3 +495,21 @@ copyonwrite(pagetable_t pagetable, uint64 va) {
   }
 }
 
+int
+iscowpage(pagetable_t pagetable, uint64 va)
+{
+  // 将虚拟地址页对齐（页表以页为单位管理）
+  uint64 va_aligned = PGROUNDDOWN(va);
+  // 查找该虚拟地址对应的页表项（PTE）
+  pte_t *pte = walk(pagetable, va_aligned, 0);
+  
+  if (pte != NULL &&                  // 页表项存在
+      (*pte & PTE_V) != 0 &&          // 页有效
+      (*pte & PTE_COW) != 0 &&        // 标记为 COW 页
+      (*pte & PTE_W) == 0) {          // 只读（无写权限）
+    return 1;
+  }
+  
+  // 不满足 COW 页条件
+  return 0;
+}

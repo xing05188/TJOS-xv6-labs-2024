@@ -67,8 +67,22 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else if((r_scause() == 15 || r_scause() == 13) && iscowpage(p->pagetable, r_stval())){   // 加在这里！！
-    copyonwrite(p->pagetable, r_stval());
+  } else if (r_scause() == 13) {  // 13: 加载页错误（读无效地址）
+    uint64 va = r_stval();
+    if (iscowpage(p->pagetable, va)) {
+      // 是COW页，触发复制
+      copyonwrite(p->pagetable, va);
+    } else {
+      p->killed = 1;
+    }
+  } else if (r_scause() == 15) {  // 15: 存储页错误（写无效地址，即scause 0xd）
+    uint64 va = r_stval();
+    if (iscowpage(p->pagetable, va)) {
+      // 是COW页，触发复制
+      copyonwrite(p->pagetable, va);
+    } else {
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause 0x%lx pid=%d\n", r_scause(), p->pid);
     printf("            sepc=0x%lx stval=0x%lx\n", r_sepc(), r_stval());
