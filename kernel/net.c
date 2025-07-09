@@ -19,10 +19,41 @@ static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
 
+#define MAX_UDP_PACKETS 16  // 每个端口最大缓存包数
+#define MAX_PORT 65535      // 最大端口号
+
+// 存储UDP数据包的结构
+struct udp_packet {
+  struct udp_packet *next;  // 链表指针
+  uint32 src_ip;            // 源IP地址（主机字节序）
+  uint16 src_port;          // 源端口（主机字节序）
+  int len;                  // 数据长度
+  char data[0];             // 柔性数组存储数据
+};
+
+// 端口绑定信息
+struct port_queue {
+  struct spinlock lock;     // 保护队列的锁
+  struct udp_packet *head;  // 队列头
+  struct udp_packet *tail;  // 队列尾
+  int count;                // 当前包数量
+  int bound;                // 是否已绑定
+};
+
+// 端口队列数组
+static struct port_queue ports[MAX_PORT + 1];
+
 void
 netinit(void)
 {
   initlock(&netlock, "netlock");
+  // 初始化所有端口队列
+  for (int i = 0; i <= MAX_PORT; i++) {
+    initlock(&ports[i].lock, "port_queue");
+    ports[i].head = ports[i].tail = 0;
+    ports[i].count = 0;
+    ports[i].bound = 0;
+  }
 }
 
 
@@ -34,11 +65,23 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
+  argint(0, &port);
 
-  return -1;
+  // 检查端口有效性
+  if (port < 0 || port > MAX_PORT)
+    return -1;
+
+  acquire(&ports[port].lock);
+  // 检查是否已绑定
+  if (ports[port].bound) {
+    release(&ports[port].lock);
+    return -1;
+  }
+  ports[port].bound = 1;
+  release(&ports[port].lock);
+
+  return 0;
 }
 
 //
@@ -74,10 +117,70 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
-  return -1;
+  int dport, maxlen;
+  uint64 src_addr, sport_addr, buf_addr;
+  
+  // 解析系统调用参数
+  argint(0, &dport);
+  argaddr(1, &src_addr);
+  argaddr(2, &sport_addr);
+  argaddr(3, &buf_addr);
+  argint(4, &maxlen);
+
+
+  // 检查端口有效性
+  if (dport < 0 || dport > MAX_PORT)
+    return -1;
+
+  struct port_queue *q = &ports[dport];
+  acquire(&q->lock);
+
+  // 检查端口是否已绑定
+  if (!q->bound) {
+    release(&q->lock);
+    return -1;
+  }
+
+  // 等待队列中有数据包
+  while (q->count == 0) {
+    sleep(q, &q->lock);  // 释放锁并休眠，被唤醒时重新获得锁
+  }
+
+  // 取出队列头部的数据包
+  struct udp_packet *p = q->head;
+  q->head = p->next;
+  if (q->head == 0) {
+    q->tail = 0;  // 队列为空时更新尾指针
+  }
+  q->count--;
+
+  release(&q->lock);  // 提前释放锁，减少持有时间
+
+  // 复制源IP到用户空间
+  int src_ip = p->src_ip;
+  if (copyout(myproc()->pagetable, src_addr, (char *)&src_ip, sizeof(src_ip)) < 0) {
+    kfree(p);
+    return -1;
+  }
+
+  // 复制源端口到用户空间
+  short src_port = p->src_port;
+  if (copyout(myproc()->pagetable, sport_addr, (char *)&src_port, sizeof(src_port)) < 0) {
+    kfree(p);
+    return -1;
+  }
+
+  // 复制数据到用户空间
+  int copy_len = p->len < maxlen ? p->len : maxlen;
+  if (copyout(myproc()->pagetable, buf_addr, p->data, copy_len) < 0) {
+    kfree(p);
+    return -1;
+  }
+
+  // 释放数据包
+  kfree(p);
+
+  return copy_len;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -182,16 +285,98 @@ sys_send(void)
 void
 ip_rx(char *buf, int len)
 {
-  // don't delete this printf; make grade depends on it.
+  // 不删除此打印，make grade依赖它
   static int seen_ip = 0;
-  if(seen_ip == 0)
+  if (seen_ip == 0)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
+  // 检查缓冲区长度是否足够
+  if (len < sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp)) {
+    kfree(buf);
+    return;
+  }
+
+  // 解析以太网头部
+  struct eth *eth = (struct eth *)buf;
   
+  // 解析IP头部
+  struct ip *ip = (struct ip *)(eth + 1);
+  int ip_header_len = (ip->ip_vhl & 0x0F) * 4;  // IP头部长度（字节）
+  if (ip_header_len < sizeof(struct ip) || ip->ip_vhl >> 4 != 4) {
+    kfree(buf);
+    return;  // 不是IPv4或头部长度异常
+  }
+
+  // 只处理UDP协议
+  if (ip->ip_p != IPPROTO_UDP) {
+    kfree(buf);
+    return;
+  }
+
+  // 解析UDP头部
+  struct udp *udp = (struct udp *)((char *)ip + ip_header_len);
+  uint16 dport = ntohs(udp->dport);  // 目的端口（网络字节序转主机字节序）
+  uint16 sport = ntohs(udp->sport);  // 源端口
+  uint16 udp_len = ntohs(udp->ulen); // UDP总长度（头部+数据）
+
+  // 检查UDP长度有效性
+  if (udp_len < sizeof(struct udp) || 
+      (ip_header_len + udp_len) > (len - sizeof(struct eth))) {
+    kfree(buf);
+    return;
+  }
+
+  // 计算数据长度和数据位置
+  int data_len = udp_len - sizeof(struct udp);
+  char *data = (char *)udp + sizeof(struct udp);
+
+  // 检查目的端口是否已绑定
+  if (dport < 0 || dport > MAX_PORT || !ports[dport].bound) {
+    kfree(buf);
+    return;  // 端口未绑定，丢弃数据包
+  }
+
+  // 分配空间存储数据包
+  struct udp_packet *p = kalloc();
+  if (!p) {
+    kfree(buf);
+    return;  // 内存不足，丢弃
+  }
+
+  // 初始化数据包
+  p->next = 0;
+  p->src_ip = ntohl(ip->ip_src);  // 源IP（网络字节序转主机字节序）
+  p->src_port = sport;
+  p->len = data_len;
+  memmove(p->data, data, data_len);  // 复制数据
+
+  // 将数据包加入对应端口的队列
+  struct port_queue *q = &ports[dport];
+  acquire(&q->lock);
+
+  // 若队列已满（超过MAX_UDP_PACKETS），丢弃新包
+  if (q->count >= MAX_UDP_PACKETS) {
+    release(&q->lock);
+    kfree(p);
+    kfree(buf);
+    return;
+  }
+
+  // 将包加入队列尾部
+  if (q->tail) {
+    q->tail->next = p;
+  } else {
+    q->head = p;  // 队列为空时，头指针指向新包
+  }
+  q->tail = p;
+  q->count++;
+
+  // 唤醒等待该端口的进程
+  wakeup(q);
+
+  release(&q->lock);
+  kfree(buf);  // 释放原始缓冲区
 }
 
 //

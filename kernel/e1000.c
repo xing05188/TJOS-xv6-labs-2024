@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 #include "e1000_dev.h"
+#include "net.h"
 
 #define TX_RING_SIZE 16
 static struct tx_desc tx_ring[TX_RING_SIZE] __attribute__((aligned(16)));
@@ -94,28 +95,54 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(char *buf, int len)
 {
-  //
-  // Your code here.
-  //
-  // buf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after send completes.
-  //
-
-  
+  acquire(&e1000_lock);
+  // 获取当前发送描述符索引
+  uint32 idx = regs[E1000_TDT] % TX_RING_SIZE;
+  // 检查描述符是否可用（DD标志是否置位）
+  if (!(tx_ring[idx].status & E1000_TXD_STAT_DD)) {
+    release(&e1000_lock);
+    return -1; // 队列已满
+  }
+  // 释放上一个缓冲区
+  if (tx_bufs[idx]) {
+    kfree(tx_bufs[idx]);
+  }
+  // 设置发送描述符
+  tx_ring[idx].addr = (uint64)buf;
+  tx_ring[idx].length = len;
+  tx_ring[idx].cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  tx_bufs[idx] = buf; // 保存缓冲区指针
+  // 更新发送队列尾指针
+  regs[E1000_TDT] = (regs[E1000_TDT] + 1) % TX_RING_SIZE;
+  release(&e1000_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver a buf for each packet (using net_rx()).
-  //
-
+  while (1) {
+    // 计算下一个要处理的接收描述符索引
+    uint32 rdt = regs[E1000_RDT];
+    uint32 idx = (rdt + 1) % RX_RING_SIZE;
+    // 检查是否有新数据包（DD标志是否置位）
+    if (!(rx_ring[idx].status & E1000_RXD_STAT_DD)) {
+      break; // 没有更多数据包
+    }
+    // 将数据包交给网络栈处理
+    net_rx(rx_bufs[idx], rx_ring[idx].length);
+    // 分配新的接收缓冲区
+    char *new_buf = kalloc();
+    if (!new_buf) {
+      panic("e1000: 无法分配新的接收缓冲区");
+    }
+    // 更新接收描述符
+    rx_ring[idx].addr = (uint64)new_buf;
+    rx_ring[idx].status = 0;
+    rx_bufs[idx] = new_buf;
+    // 更新接收队列尾指针
+    regs[E1000_RDT] = idx;
+  }
 }
 
 void
