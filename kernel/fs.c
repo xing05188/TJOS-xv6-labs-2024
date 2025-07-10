@@ -409,33 +409,25 @@ bmap(struct inode *ip, uint bn)
 
   // Doubly-indirect block
   if(bn < NDINDIRECT){
-    uint idx = bn / NINDIRECT;
-    uint idx2 = bn % NINDIRECT;
-    struct buf *bp2;
-    uint *a2;
-
-    // Get doubly-indirect block
+    // 第一级间接块
     if((addr = ip->addrs[NDIRECT+1]) == 0)
       ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
-    
-    // Get singly-indirect block
-    if((addr = a[idx]) == 0){
-      a[idx] = addr = balloc(ip->dev);
+    // 第二级间接块
+    if((addr = a[bn/NINDIRECT]) == 0) {
+      a[bn/NINDIRECT] = addr = balloc(ip->dev);
       log_write(bp);
     }
     brelse(bp);
-    
-    bp2 = bread(ip->dev, addr);
-    a2 = (uint*)bp2->data;
-    
-    // Get data block
-    if((addr = a2[idx2]) == 0){
-      a2[idx2] = addr = balloc(ip->dev);
-      log_write(bp2);
+    // 数据块
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+    if((addr = a[bn%NINDIRECT]) == 0) {
+      a[bn%NINDIRECT] = addr = balloc(ip->dev);
+      log_write(bp);
     }
-    brelse(bp2);
+    brelse(bp);
     return addr;
   }
 
