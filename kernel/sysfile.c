@@ -309,6 +309,7 @@ sys_open(void)
   struct file *f;
   struct inode *ip;
   int n;
+  char target[MAXPATH];  // 用于存储符号链接的目标路径
 
   argint(1, &omode);
   if((n = argstr(0, path, MAXPATH)) < 0)
@@ -328,6 +329,41 @@ sys_open(void)
       return -1;
     }
     ilock(ip);
+    
+    // 符号链接解析 - 仅当不是 O_NOFOLLOW 时
+    if(ip->type == T_SYMLINK && !(omode & O_NOFOLLOW)) {
+      // 递归解析符号链接，最多10层防止循环
+      for(int i = 0; i < 10; i++) {
+        // 读取符号链接的目标路径
+        if(readi(ip, 0, (uint64)target, 0, MAXPATH) != MAXPATH) {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        iunlockput(ip);
+        
+        // 根据目标路径查找新的inode
+        ip = namei(target);
+        if(ip == 0) {
+          end_op();
+          return -1;
+        }
+        ilock(ip);
+        
+        // 如果不是符号链接则停止解析
+        if(ip->type != T_SYMLINK) {
+          break;
+        }
+      }
+      
+      // 如果解析10次后仍然是符号链接，返回错误
+      if(ip->type == T_SYMLINK) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+    }
+
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
@@ -501,5 +537,35 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  struct inode *ip;
+  
+  if(argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  begin_op();
+  
+  // Create the symlink inode
+  ip = create(path, T_SYMLINK, 0, 0);
+  if(ip == 0){
+    end_op();
+    return -1;
+  }
+
+  // Write the target path to the inode's data block
+  if(writei(ip, 0, (uint64)target, 0, MAXPATH) < MAXPATH) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  iunlockput(ip);
+  end_op();
   return 0;
 }
