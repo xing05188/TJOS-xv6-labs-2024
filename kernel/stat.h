@@ -9,3 +9,4 @@ struct stat {
   short nlink; // Number of links to file
   uint64 size; // Size of file in bytes
 };
+//

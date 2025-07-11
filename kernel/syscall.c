@@ -128,6 +128,8 @@ static uint64 (*syscalls[])(void) = {
 [SYS_close]   sys_close,
 };
 
+//
+
 void
 syscall(void)
 {
